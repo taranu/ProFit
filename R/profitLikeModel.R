@@ -78,10 +78,42 @@ profitLikeModel=function(parm, Data, makeplots=FALSE, serscomp='all', pscomp='al
   if(Data$usecalcregion){
     model = profitMakeModel(model=paramsnew, magzero = Data$magzero, psf=Data$psf, dim=Data$imagedim, 
       serscomp=serscomp, pscomp=pscomp, rough=rough, calcregion=Data$calcregion, docalcregion=Data$usecalcregion,
-      magmu=Data$magmu,finesample=finesample, convopt=Data$convopt)
+      magmu=Data$magmu,finesample=finesample, convopt=Data$convopt, estdeconvcovar=usecovar)
   }else{
     model = profitMakeModel(model=paramsnew, magzero = Data$magzero, psf=Data$psf, dim=Data$imagedim, 
-      serscomp=serscomp, pscomp=pscomp, rough=rough, magmu=Data$magmu, finesample=finesample, convopt=Data$convopt)
+      serscomp=serscomp, pscomp=pscomp, rough=rough, magmu=Data$magmu, finesample=finesample, convopt=Data$convopt,
+      estdeconvcovar=usecovar)
+  }
+  
+  if(usecovar)
+  {
+    padxy = dim(model$z)
+    padimg = matrix(0,padxy[1],padxy[2])
+    padsigma = padimg
+    padimg[model$xcrop,model$ycrop] = img
+    padsigma[model$xcrop,model$ycrop] = sigimg
+    
+    psfpad = padxy - dim(Data$image)
+    nts = c()
+    maxdivisions = ceiling(2*sqrt(padxy[1]))
+    maxdivisions = 8
+    for(nti in 2:maxdivisions) {
+      denom = (padxy[1]+(nti-2)*psfpad[1])
+      if(denom > 0 && ((denom %% nti) == 0)) nts = c(nts,nti)
+    }
+    nt = nts[length(nts)]
+    
+    incovar = Data$covarinv
+    getcovar = is.null(incovar)
+    if(getcovar) incovar = list(model$estvar, model$estcov)
+    chisqcov = profitChisqFromEstDeconvCovErr(padimg, model$z, padsigma, 
+      incovar, psf, nt, nt, skylevel/Data$gain)
+    if(getcovar && Data$algo.func == "estcovar") 
+    {
+      outcovarinv = chisqcov$covarinvs
+      outcovar = chisqcov$covars
+    }
+    model$z = model$z[model$xcrop,model$ycrop]
   }
   
   if(any(Data$region)) {
@@ -94,8 +126,12 @@ profitLikeModel=function(parm, Data, makeplots=FALSE, serscomp='all', pscomp='al
   }
   ndata = length(cutim)
   
-  cutsig=(cutim-cutmod)/cutsig
-  vardata = var(cutsig)
+  if(usecovar) {
+    vardata = var(sqrt(abs(cutsig)))
+  } else {
+    cutsig=(cutim-cutmod)/cutsig
+    vardata = var(cutsig)  
+  }
   dof=2*vardata/(vardata-1)
   dof=interval(dof,0,Inf)
   if(Data$likefunc=="chisq") {
@@ -107,8 +143,13 @@ profitLikeModel=function(parm, Data, makeplots=FALSE, serscomp='all', pscomp='al
   }
   
   if(makeplots){
-    profitMakePlots(img-skylevel,model$z-skylevel,Data$region, sigimg, cmap=cmap, errcmap=errcmap, 
-      dofs=c(dof),plotchisq=TRUE)
+    if(usecovar) {
+      errimg = abs(chisqcov$chisqs)
+    } else {
+      errimg = sigimg
+    }
+    profitMakePlots(img-skylevel,model$z-skylevel,Data$region, errimg, cmap=cmap, errcmap=errcmap, 
+      dofs=c(dof),plotchisq=TRUE,plotchisq=usecovar)
   }
   
   LP=as.numeric(LL+priorsum)

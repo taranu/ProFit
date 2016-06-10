@@ -114,7 +114,19 @@ profitMakeModel=function(model,magzero=0,psf=NULL,dim=c(100,100), serscomp='all'
     
     xcrop = (1+psfpad[1]):(dimbase[1]-psfpad[1])
     ycrop = (1+psfpad[2]):(dimbase[2]-psfpad[2])
+    if(estdeconvcovar)
+    {
+      rval$xcrop = xcrop
+      rval$ycrop = ycrop
+      rval$estvar = basemat/gain
+    }
     basemat=profitConvolvePSF(basemat,psf,options=convopt)
+    if(estdeconvcovar)
+    {
+      rval$estcov = basemat$covar
+      basemat = basemat$conv
+    }
+    
     tmppsf = psf
     if(haspsfmodel) tmppsf=NULL
     if(length(model$pointsource)>0){
@@ -127,7 +139,7 @@ profitMakeModel=function(model,magzero=0,psf=NULL,dim=c(100,100), serscomp='all'
     }
   }
   
-  if(haspsf && returncrop)
+  if(haspsf && returncrop && !estdeconvcovar)
   {
     dimbase = dim*finesample
     psfcrop = floor(dim(psf)/2)
