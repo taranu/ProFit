@@ -50,11 +50,12 @@ profitConvolvePSF=function(image, psf, calcregion, docalcregion=FALSE,
     imgpad = imgpad * psffft
     if(isfftw) {
       imgpad = fftw::IFFT(imgpad, plan=options$fft$fftwplan)
-      dim(imgfftw) = options$fft$padimgdim
     } else if(isfftr) {
       imgpad = fft(imgpad, inverse = TRUE)
     }
-    output=Re(imgpad[options$fft$cropx,options$fft$cropy])
+    output=Re(imgpad)
+    if(isfftw) dim(output) = options$fft$paddim
+    output=output[options$fft$cropx,options$fft$cropy]
   }
   return(output)
 }
