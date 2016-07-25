@@ -1,184 +1,94 @@
-# A quick function to fit a planar sky (should be able to use hyper.fit instead if needed,
-# but SVD gives the least-squares solution right away and we don't need uncertainties)
-svdfitplane <- function(x, fitintercept=TRUE)
-{
-  ndim = dim(x)[[2]]
-  stopifnot(!is.null(ndim) && ndim > 1)
-  medians = vector(mode="numeric",ndim)
-  x[,1] = -x[,1]
-  for(i in 1:ndim)
-  {
-    medians[i] = median(x[,i])
-    x[,i] = x[,i] - medians[i]
-  }
-  if(fitintercept) x[,4] = x[,1]*0 + 1
-  ndim = dim(x)[[2]]
-  svdfit = svd(x)$v
-  # I don't recall what the purpose of this step is. Oops!
-  svdfit = svdfit[,ndim-!fitintercept]/svdfit[1,ndim-!fitintercept]
-  # Add the previously subtracted medians into the intercept
-  svdfit[ndim] = svdfit[ndim] - sum(svdfit[1:(ndim-fitintercept)]*medians)
-  # The first element is unity and not actually useful
-  fitpar = svdfit[2:ndim]
-  # Return the 3D scatter by projecting the orthognal vector to the plane
-  # onto the scatter in the first dimension
-  fitpar[ndim] = sd(as.matrix(x) %*% svdfit)
-  # svdfit[1] is always unity, but just to be explicit...
-  fitpar[ndim+1] = fitpar[ndim]*svdfit[1]/sqrt(sum(svdfit[1:(ndim-fitintercept)]^2))
-  
-  return(fitpar)
-}
-
-#Load ProFit example data for G79635
+# Loads and fits a SAMI galaxy given by the string gid (which should be an integer)
+stopifnot(exists("gid") && is.numeric(as.integer(gid)) && exists("band"))
 
 require(RColorBrewer)
-cmap = rev(colorRampPalette(brewer.pal(9,'YlOrBr'))(200))
+#cmap = rev(colorRampPalette(brewer.pal(9,'YlOrBr'))(200))
 errcmap = rev(colorRampPalette(brewer.pal(9,'RdYlBu'))(200))
-
-xregion = 126:325
-yregion = 137:336
+cmap = errcmap
 
 datapath = "inst/extdata/"
-input= readFITS(paste0(datapath,"G79635_r_fitim.fits"))$imDat
-sigma = readFITS(paste0(datapath,"G79635_r_sigma.fits"))$imDat
-mask = readFITS(paste0(datapath,"G79635_r_mskim.fits"))$imDat[xregion,yregion]
-segim = readFITS(paste0(datapath,"G79635_r_segim.fits"))$imDat[xregion,yregion]
-psfim = readFITS(paste0(datapath,"G79635_r_psfim.fits"))$imDat
-psfims = readFITS(paste0(datapath,"G79635_r_psfim.fits"))$imDat
-orig = readFITS("~/raid/sami/kids/G79635/r/cutim.fits")$imDat
+source("inst/example/SAMIDataPrep.R")
+gpath = paste0("~/raid/sami/kids/G",gid,"/",band,"/")
+
+if(FALSE)
+{
+  input= readFITS(paste0(datapath,"G",gid,"_r_fitim.fits"))
+  sigma = readFITS(paste0(datapath,"G",gid,"_r_sigma.fits"))
+  mask = readFITS(paste0(datapath,"G",gid,"_r_mskim.fits"))$imDat
+  segim = readFITS(paste0(datapath,"G",gid,"_r_segim.fits"))
+  psfim = readFITS(paste0(datapath,"G",gid,"_r_psfim.fits"))$imDat
+  psfims = readFITS(paste0(datapath,"G",gid,"_r_psfim.fits"))$imDat
+  orig = readFITS(paste0("~/raid/sami/kids/G",gid,"/r/cutim.fits"))$imDat
+} else {
+  input= readFITS(paste0(gpath,"fitim.fits"))
+  sigma = readFITS(paste0(gpath,"sigma.fits"))
+  mask = readFITS(paste0(gpath,"M01_mskim.fits"))$imDat
+  segim = readFITS(paste0(gpath,"segim.fits"))
+  psfim = readFITS(paste0(gpath,"psfim.fits"))$imDat
+  psfims = readFITS(paste0(gpath,"psfim.fits"))$imDat
+  orig = readFITS(paste0(gpath,"cutim.fits"))$imDat
+}
+
+sigmahead = sigma$header
+inputhead = input$header
+segimhead = segim$header
+sigma = sigma$imDat
+input = input$imDat
+segim = segim$imDat
 
 # KiDS-specific info
 # https://www.eso.org/sci/facilities/paranal/instruments/omegacam/inst.html
 # See above: Should probably use QE*filter throughput
 # http://www.e2v.com/resources/account/download-datasheet/1238
 # https://www.eso.org/sci/facilities/paranal/instruments/omegacam/doc/VST-MAN-OCM-23100-3110-2_7_1.pdf
-# https://www.eso.org/sci/publications/messenger/archive/no.110-dec02/messenger-no110-15-18.pdf
 ccdgains = c(2.37,2.52,2.62,2.56,2.56,2.78,2.73,2.37,2.57,2.56,2.56,2.46,2.40,2.32,2.39,2.52,2.40,2.48,2.52,2.44,2.66,2.71,2.67,2.57,2.39,2.59,2.49,2.55,2.48,2.23,2.54,2.39)
 gain_inv_e = mean(ccdgains)
-# Systemic throughput
-throughput_sys_r = 0.42
-# Throughput through the atmosphere - may be depend heavily on conditions at some sites
-throughput_atm_r = 0.39
+if(band == "r") {
+  throughput_sys = 0.42
+  throughput_atm = 0.385
+} else if(band == "g") {
+  throughput_sys = 0.46
+  throughput_atm = 0.4
+}
 
 # Overrides for this particular galaxy
-
-par(mfrow=c(2,3))
-magimage(input,col=cmap)
-gain_eff = 3.040366e+13
-xbounds = c(121,244,360)
-xbound2 = 245
-xpatch1 = xbounds[1]:(xbounds[2]-1)
-ypatch1 = 15:85
-skypatch1 = input[xpatch1,ypatch1]
-xpatch2 = xpatch1
-ypatch2 = 430:473
-skypatch2 = input[xpatch2,ypatch2]
-xpatch3 = (xbounds[2]+1):xbounds[3]
-ypatch3 = 31:90
-skypatch3 = input[xpatch3,ypatch3]
-xpatch4 = xpatch3
-ypatch4 = 420:473
-skypatch4 = input[xpatch4,ypatch4]
-skypatches = list(
-  list(list(x=xpatch1,y=ypatch1,z=skypatch1),
-       list(x=xpatch2,y=ypatch2,z=skypatch2)),
-  list(list(x=xpatch3,y=ypatch3,z=skypatch3),
-       list(x=xpatch4,y=ypatch4,z=skypatch4))
-)
-skylevels = numeric(length(skypatches))
-patchskylevels = list(length(skypatches))
-for(i in 1:length(skypatches))
+datamod = processKidsImage(gid, band, input, sigma, orig)
+datamodnames = names(datamod)
+if("input" %in% datamodnames) input = datamod$input
+if("sigma" %in% datamodnames) sigma = datamod$sigma
+if("xregion" %in% datamodnames && "yregion" %in% datamodnames)
 {
-  x = numeric(0)
-  y = numeric(0)
-  z = numeric(0)
-  for(j in 1:length(skypatches[[i]]))
-  {
-    x=c(x,as.vector(row(skypatches[[i]][[j]]$z))-1+skypatches[[i]][[j]]$x[1])
-    y=c(y,as.vector(col(skypatches[[i]][[j]]$z))-1+skypatches[[i]][[j]]$y[1])
-    z=c(z,as.vector(skypatches[[i]][[j]]$z)) 
-  }
-  tofit = data.frame(z=z, x=x, y=y)
-  
-  tempcon = 0*input
-  
-  #tmp = hyper.fit(tofit)
-  fit = svdfitplane(tofit)
-  skymodel = fit[1]*x + fit[2]*y + fit[3]
-  xi = 1
-  for(j in 1:length(skypatches[[i]]))
-  {
-    nx = length(skypatches[[i]][[j]]$z)
-    meanz = mean(skypatches[[i]][[j]]$z)
-    print(paste0("Pre/post means: ",meanz,",",mean(
-      skypatches[[i]][[j]]$z-skymodel[xi:(xi+nx-1)])))
-    xi = xi+nx
-    tempcon[skypatches[[i]][[j]]$x,skypatches[[i]][[j]]$y] = 1
-  }  
-  tempcon=magimage(tempcon,add=T,col=NA)#hsv(s=0,alpha=0.5)
-  parmfg = par("mfg")
-  if(i > 1) 
-  {
-    parmfg[1:2] = c(1,1)
-    par(mfg = parmfg)
-  }
-  contour(tempcon,add=T,drawlabels = F,levels=1,col='cyan')
-  if(i > 1)
-  {
-    parmfg[1:2] = c(i,2)
-    par(mfg = parmfg)
-  }
-  x = xbounds[i]:(xbounds[i+1]-1)
-  y = 1:dim(input)[[2]]
-  xa=as.vector(row(input[x,y])) + xbounds[i]-1
-  ya=as.vector(col(input[x,y]))
-  skymodel = fit[1]*xa + fit[2]*ya + fit[3]
-  input[x,y] = input[x,y] - skymodel
-  xi = 1
-  skylevels[i] = gain_eff*var(as.vector(tofit$z - fit[1]*tofit$x - fit[2]*tofit$y - fit[3]))
-  patchskylevels[[i]] = numeric(length(skypatches[[i]]))
-  for(j in 1:length(skypatches[[i]]))
-  {
-    print(paste0("ivar[",i,",",j,"]=",1/var(as.vector(skypatches[[i]][[j]]$z))))
-    nz = length(skypatches[[i]][[j]]$z)
-    zs = xi:(xi+nz-1)
-    skypatch = tofit$z[zs]  - (fit[1]*tofit$x[zs] + fit[2]*tofit$y[zs] + fit[3])
-    xi = xi + nz
-    hist(skypatch,breaks = 100,freq=FALSE,main="",xlab="mgy")
-    title(paste0("skypatch[",i,",",j,"]"))
-    xh = seq(-2e-11,3e-11,1e-13)
-    skylevel = gain_eff*var(as.vector(skypatch))
-    lines(xh,dnorm(xh,sd = mean(sigma[x,y])),col="red")
-    lines(xh,dnorm(xh,sd = sqrt(skylevel/gain_eff)),col="blue")
-    lines(xh,dnorm(xh,sd = sqrt(skylevels[i]/gain_eff)),col="green")
-    patchskylevels[[i]][j] = skylevel
-  }
+  mask = mask[datamod$xregion,datamod$yregion]
+  segim = segim[datamod$xregion,datamod$yregion]
 }
-print(paste0("ivar top left: ",1/var(as.vector(orig[700:830,270:370]))))
-print(paste0("ivar top right: ",1/var(as.vector(orig[1750:1860,475:610]))))
-skylevel = var(as.vector(orig[1750:1860,475:610]))*gain_eff
-parmfg[1:2] = c(length(skypatches),1)
-par(mfg=parmfg)
-magimage(input,col=cmap)
-par(mfrow=c(1,1))
-# Note this is the number of sky photons *emitted*
+psfmodel = datamod$psfmodel
+skylevel = datamod$skylevel
+gain_eff = datamod$gain_eff
 
-# Sanity check - a patch of sky not affected by the dither artifacts near the galaxy
-# Variance ~ counts * throughput^2 
-input = input[xregion,yregion]
-sigma = sqrt((input/throughput_atm_r + skylevel/throughput_sys_r)/gain_eff)
-skymin = log10(skylevel/5)
-skymax = log10(skylevel*5)
-input = input + skylevel
+writecorrected = TRUE
+if(writecorrected) {
+  writeFITSim(sigma,file=paste0("~/raid/sami/models/",gid,"/kids_sigma_",
+    band,".fits"),header=sigmahead)
+  writeFITSim(input-skylevel,file=paste0("~/raid/sami/models/",gid,"/kids_fitim_",
+    band,".fits"),header=inputhead)
+  writeFITSim(segim==segim[dim(segim)[1]/2,dim(segim)[2]/2],file=paste0("~/raid/sami/models/",
+    gid,"/kids_mask_",band,".fits"),header=inputhead)
+}
+
+skymin = log10(skylevel/4)
+skymax = log10(skylevel*4)
+
+xc = dim(input)[1]/2
+yc = dim(input)[2]/2
+rc = sqrt(xc^2 + yc^2)
 
 #Very rough model (not meant to look too good yet):
-
 model=list(
   sersic=list(
-    xcen= list(100.25, 100.25),
-    ycen= list(100.25, 100.25),
-    mag= list(17, 15),
-    re= list(5, 50),
+    xcen= list(xc, xc),
+    ycen= list(yc, yc),
+    mag= list(16, 16),
+    re= list(rc/16, rc/4),
     nser= list(4.0, 1.0),
     ang= list(0.0, 135), #theta/deg: 0= |, 45= \, 90= -, 135= /, 180= |
     axrat= list(1.0, 0.6) #min/maj: 1= o, 0= |
@@ -187,15 +97,12 @@ model=list(
   sky=list(bg=skylevel)
 )
 
-modelpsf = model
-modelpsf$psf=list(
-  hwhm=1.274,
-  ang=130,
-  axrat = 0.95
-)
-
 finesample = 3L
-psfarea = pi*(fwhmfac/2*model$psf$sigmaj)^2*model$psf$axrat
+psfarea = pi*(psfmodel$sersic$re)^2*psfmodel$sersic$axrat
+psfdim = ceiling(psfmodel$sersic$re*3)
+psfdim = as.integer(psfdim + !(psfdim %% 2))
+psf = profitMakePointSource(model=psfmodel, image = matrix(0,psfdim,psfdim))
+psff = profitMakePointSource(model=psfmodel, image = matrix(0,psfdim*finesample,psfdim*finesample))
 
 # The pure model (no PSF):
 magimage(profitMakeModel(model,dim=dim(input)),magmap=T,stretch='asinh',stretchscale=1/median(abs(input)),col=cmap)
@@ -204,15 +111,15 @@ magimage(profitMakeModel(model,dim=dim(input)),magmap=T,stretch='asinh',stretchs
 magimage(input,magmap=T,stretch='asinh',stretchscale=1/median(abs(input)),col=cmap)
 
 # The convolved model (with PSF):
-modelconv = profitMakeModel(modelpsf,dim=dim(input))
+modelconv = profitMakeModel(model,psf=psf,dim=dim(input))
 magimage(modelconv,magmap=T,stretch='asinh',stretchscale=1/median(abs(input)),col=cmap)
 
 # The convolved model (with fine-sampled PSF):
-modelconvfd = profitMakeModel(modelpsf,dim=dim(input),finesample=finesample)
+modelconvfd = profitMakeModel(model,psf=psff,dim=dim(input),finesample=finesample)
 magimage(modelconvfd,magmap=T,stretch='asinh',stretchscale=1/median(abs(input)),col=cmap)
 
 # The convolved model (with fine-sampled PSF), prior to downsampling:
-modelconvf = profitMakeModel(modelpsf,dim=dim(input),finesample=finesample,returnfine = TRUE)
+modelconvf = profitMakeModel(model,psf=psff,dim=dim(input),finesample=finesample,returnfine = TRUE)
 magimage(modelconvf,magmap=T,stretch='asinh',stretchscale=1/median(abs(input)),col=cmap)
 
 # The fine-sampled model, pre-convolution, prior to downsampling:
@@ -236,12 +143,7 @@ tofit=list(
     axrat= list(FALSE,TRUE) #The bulge has axrat=1 for our first fit
   ),
   magzero=list(FALSE),
-  sky=list(bg=TRUE),
-  psf=list(
-    sigmaj=FALSE,
-    ang=FALSE,
-    axrat = FALSE
-  )
+  sky=list(bg=TRUE)
 )
 
 # What parameters should be fitted in log space:
@@ -257,12 +159,7 @@ tolog=list(
     axrat= list(T,T) #axrat is best fit in log space
   ),
   magzero=list(FALSE),
-  sky=list(bg=T),
-  psf=list(
-    sigmaj=TRUE,
-    ang=FALSE, 
-    axrat=TRUE
-  )
+  sky=list(bg=T)
 )
 
 # The priors. If the parameters are to be sampled in log space (above) then the priors will refer to dex not linear standard deviations. Priors should be specified in their unlogged state- the logging is done internally.
@@ -278,12 +175,7 @@ priorsd=list(
     axrat= list(1.0, 0.6)  # i.e. 1 dex in axrat is the SD
   ),
   magzero=list(5),
-  sky=list(bg = 0.05),
-  psf=list(
-    sigmaj = 0.1,
-    ang=10, 
-    axrat = 0.02
-  )
+  sky=list(bg = 0.05)
 )
 
 priors = as.list(unlist(priorsd))
@@ -301,29 +193,23 @@ intervals=list(
     xcen=list(function(x){interval(x,-Inf,Inf,reflect=F)},function(x){interval(x,-Inf,Inf,reflect=F)}),
     ycen=list(function(x){interval(x,-Inf,Inf,reflect=F)},function(x){interval(x,-Inf,Inf,reflect=F)}),
     mag=list(function(x){interval(x,10,30,reflect=F)},function(x){interval(x,10,30,reflect=F)}),
-    re=list(function(x){interval(x,-1,2,reflect=F)},function(x){interval(x,-1,2,reflect=F)}), # i.e. 1 dex in re is the SD
+    re=list(function(x){interval(x,-1,2.5,reflect=F)},function(x){interval(x,-1,2.5,reflect=F)}), # i.e. 1 dex in re is the SD
     nser=list(function(x){interval(x,log10(0.5),1.3,reflect=F)},function(x){interval(x,-0.3,1.3,reflect=F)}), # i.e. 1 dex in nser is the SD
     ang=list(function(x){x = ((x+180) %% 360) - 180},function(x){interval(x,-Inf,Inf,reflect=F)}),
     axrat=list(function(x){interval(x,-2,0,reflect=F)},function(x){interval(x,-2,0,reflect=F)}) # i.e. 1 dex in axrat is the SD
   ),
   magzero=list(function(x){interval(x,-Inf,Inf,reflect=F)}),
-  sky=list(bg=list(function(x){interval(x,skymin,skymax,reflect=F)})),
-  psf=list(
-    sigmaj=function(x){interval(x,-1,1,reflect=F)}, # should never hit these
-    ang=function(x){x = ((x+180) %% 360) - 180},
-    axrat=function(x){interval(x,-0.5,0,reflect=F)}
-  )
+  sky=list(bg=list(function(x){interval(x,skymin,skymax,reflect=F)}))
 )
 
 #Setup the data structure we need for optimisation:
 
 psf = psff
-#DataG=profitSetupData(image=input,mask=mask,sigma=sigma,segim = segim,psf = psf,model = model, tofit = tofit, 
-#  tolog=tolog, priors = priors, intervals=intervals,algo.func = "", finesample=finesample, verbose=TRUE) 
+if(!exists("DataG")) DataG=profitSetupData(image=input,mask=mask,sigma=sigma,segim = segim,psf = psf,model = model, 
+  tofit = tofit, tolog=tolog, priors = priors, intervals=intervals,algo.func = "", finesample=finesample, verbose=TRUE) 
 
 DataG$psfarea = psfarea
 DataG$gain = gain_eff
-DataG$skylevel = skylevel
 
 # This produces a fairly complex R object, but with all the bits we need for fitting, e.g. (notice the tolog parameteres are now logged):
 
@@ -338,19 +224,20 @@ rv = profitLikeModel(DataG$init,DataG,makeplots=T,cmap = cmap, errcmap=errcmap)
 # Now with covariance estimated from the model + sky + gain:
 #profitLikeModel(DataG$init,DataG,estcovar = TRUE, image=TRUE)
 
-#Now we can try a LaplaceApproximation fit (should take about a minute):
-
-# typical best fit WITH variable sigma:
-#best = c(1.002408e+02,9.920150e+01,1.960737e+01,1.445976e+01,3.199611e-01,1.835790e+00,-1.393799e-01,4.70347e+01,
-#-2.144674e-01,-9.450028e+00,4.075778e-01,3.000721e+01,-1.945166e-01)
-# without, w/ LL = -2.648171e+04
-#LAfit_best = c(100.3100277,99.3268650,17.4907025,14.4302261,1.5930241,1.8672720,0.7318285,135.1517763,-0.2264003,-9.715,109.707) #,-2.895660e-01)
 best = c(100.21085,99.19477,19.70171,14.50953,0.44658,1.8276456,-0.208384,136.62,-0.2181,-9.7101,109.707)
-
 names(best) = DataG$parm.names
-init = best[1:(length(best)-1)]
+bestf = c(100.212,99.179,19.66,14.513,0.454,1.829,-0.167,136.07,-0.21936,-9.69377)
+if(band == "g") bestf = c(100.6264050,99.4205854,20.4668126,14.8644415,0.7693278,1.9200132,0.6111524,135.7312155,-0.2196236,-10.3740616)
+if(gid == "77754") bestf = c(1.004505e+02,9.966245e+01,1.845005e+01,1.531247e+01,5.531417e-01,1.573627e+00,-9.399536e-03,1.708520e+02,-2.577917e-01,-9.976029e+00)
+if(gid == "238282") bestf = c(59.97907394,59.02058617,18.32457835,16.33379224,0.01615005,1.26221494,0.16354749,32.64407153,-0.20673562,-9.77888680)
+names(bestf) = DataG$parm.names
+init = bestf
 
-rv = profitLikeModel(best,DataG,makeplots=T,cmap = cmap, errcmap=errcmap)
+# bestldg
+# sersic.xcen1  sersic.ycen1   sersic.mag1   sersic.mag2    sersic.re1    sersic.re2  sersic.nser1   sersic.ang2 sersic.axrat2        sky.bg 
+# 100.5814694    99.3961693    20.9342004    14.8734759     0.4865213     1.9156031    -0.3003859   135.7662751    -0.2187757   -10.3727678
+
+rv = profitLikeModel(bestf,DataG,makeplots=T,cmap = cmap, errcmap=errcmap)
 
 dola = FALSE
 docma = FALSE
@@ -370,10 +257,11 @@ if(dola)
 
 if(docma)
 {
+  require(cmaeshpc)
   # The priors are a bit too broad, perhaps...
   DataG$algo.func = "CMA"
-  cma_sigma = unlist(priorsd)[which(unlist(tofit))]/5.0
-  cmafit = profitCMAES(DataG$init, profitLikeModel, Data=DataG, # lowerlims=lowerlim, upperlims=upperlim, lower=lowerlim, upper=upperlim,
+  cma_sigma = unlist(priorsd)[which(unlist(tofit))]/4.0
+  cmafit = cmaeshpc(DataG$init, profitLikeModel, Data=DataG, # lowerlims=lowerlim, upperlims=upperlim, lower=lowerlim, upper=upperlim,
     control=list(maxit=2e3,diag.sigma=TRUE,diag.eigen=TRUE,diag.pop=TRUE,diag.value=TRUE,
     fnscale=-1.0,sigma=cma_sigma,maxwalltime=Inf, trace=TRUE, stopfitness = 0, stop.tolx=1e-2*cma_sigma))
   
@@ -386,7 +274,7 @@ if(dold)
   #Now we can try a LaplacesDemon fit:
   DataG$algo.func="LD"
   LDfits = list()
-  niters = 1e4
+  niters = 5e3
   # This algorithm takes forever and returns hideous posteriors
   #t1 = proc.time()[['elapsed']]
   #LDfits$ADMG=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataG,Iterations=niters,Algorithm="ADMG",
@@ -399,8 +287,8 @@ if(dold)
   t3 = proc.time()[['elapsed']]
   
   # Haven't tried yet
-  LDfits$HARM=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataG,Iterations=niters,Algorithm="HARM",
-    Thinning=1,Specs=list(alpha.star=0.44))
+  #LDfits$HARM=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataG,Iterations=niters,Algorithm="HARM",
+  #  Thinning=1,Specs=list(alpha.star=0.44))
   t4 = proc.time()[['elapsed']]
   
   # Still best
@@ -431,8 +319,8 @@ if(dold)
   }
 }
 
-DataG$algo.func = ""
-psf = profitLikeModel(best,DataG,makeplots=FALSE,cmap = cmap, errcmap=errcmap)$psf
+DataG$algo.func=""
+rv = profitLikeModel(bestf,DataG,makeplots=T,cmap = cmap, errcmap=errcmap)
 
 # Now fit the *pre-convolution* best-fit model: hopefully you get the best-fit back!
 nopsfmodel = model
@@ -459,51 +347,56 @@ DataM=profitSetupData(image=rv$model$z, mask=mask,sigma=sigma,segim = segim,psf 
   model = nopsfmodel, tofit = nopsftofit, tolog=nopsftolog, priors = nopsfpriors, 
   intervals=nopsfintervals,algo.func = "", finesample = finesample, verbose=TRUE)
 DataM$gain = gain_eff
-DataM$skylevel = 10^best['sky.bg']
 
 initp = init
 initp['sersic.xcen1'] = init['sersic.xcen1'] + padx
 initp['sersic.ycen1'] = init['sersic.ycen1'] + pady
 
-DataP=profitSetupData(image=matrix(0,nxpad,nypad), mask=mask,sigma=sigma,segim = segim,psf = NULL,
+segimpad = matrix(0,nxpad,nypad)
+sigmapad = segimpad
+maskpad = segimpad
+segimpad[(1:nx)+padx,(1:ny)+pady] = segim
+sigmapad[(1:nx)+padx,(1:ny)+pady] = sigma
+maskpad[(1:nx)+padx,(1:ny)+pady] = mask
+DataP=profitSetupData(image=matrix(0,nxpad,nypad), mask=maskpad,sigma=sigmapad,segim = segimpad,psf = NULL,
   model = nopsfmodel, tofit = nopsftofit, tolog=nopsftolog, priors = nopsfpriors, 
   intervals=nopsfintervals, algo.func = "", finesample = finesample, verbose=TRUE)
 
 # Gain to convert from photoelectrons to source photons
-gain_atm = 1.0/(gain_inv_e*throughput_atm_r)
-gain_sys = 1.0/(gain_inv_e*throughput_sys_r)
+gain_atm = 1.0/(gain_inv_e*throughput_atm)
+gain_sys = 1.0/(gain_inv_e*throughput_sys)
 
-bestmodelcounts = (profitLikeModel(initp,DataP)$model$z-DataM$skylevel)*gain_eff
-bestsky = matrix(DataM$skylevel*gain_eff, nrow=nx, ncol=ny)
-randmodelcounts = profitPoissonMC(bestmodelcounts,1,throughput_atm_r,1)
+skylevel = 10^initp['sky.bg']
+
+DataP$usecalcregion=FALSE
+bestmodelcounts = (profitLikeModel(initp,DataP)$model$z-skylevel)*gain_eff
+bestsky = matrix(skylevel*gain_eff, nrow=nx, ncol=ny)
+randmodelcounts = profitPoissonMC(bestmodelcounts,1,throughput_atm,1)
 # I don't know why this is faster than just calling rpois but it is
-randmodelsky = profitPoissonMC(bestsky,3,throughput_sys_r,1)
+randmodelsky = profitPoissonMC(bestsky,3,throughput_sys,1)
 randmodel = (round(randmodelcounts[cropx,cropy]*gain_inv_e)*gain_atm +
   round(randmodelsky*gain_inv_e)*gain_sys)/gain_eff
 
-sigma = sqrt(((randmodel-DataM$skylevel)/throughput_atm_r + DataM$skylevel/throughput_sys_r)/gain_eff)
+sigma = sqrt(((randmodel-skylevel)/throughput_atm + skylevel/throughput_sys)/gain_eff)
 
 DataM=profitSetupData(image=randmodel,mask=mask,sigma=sigma,segim = segim,psf = NULL, 
   model = nopsfmodel, tofit = nopsftofit, tolog=nopsftolog, priors = nopsfpriors, 
   intervals=nopsfintervals,algo.func = "", verbose=TRUE)
 DataM$gain = gain_eff
-DataM$skylevel = 10^best['sky.bg']
 DataM$psfarea = NULL
 
 rv = profitLikeModel(init,DataM,makeplots=T,cmap = cmap, errcmap=errcmap)
 #LAfitm=LaplaceApproximation(profitLikeModel,parm=init,Data=DataM,Iterations= 1e4,Method='BFGS',CovEst='Identity',sir=FALSE)
-#LDfitm=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataM,Iterations=1e3,Algorithm='CHARM',Thinning=1,Specs=list(alpha.star=0.44))
+#LDfitm=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataM,Iterations=1e4,Algorithm='CHARM',Thinning=1,Specs=list(alpha.star=0.44))
 
-DataG$algo.func = ""
 randmodelc = (round(profitBruteConvMC(randmodelcounts,psf,2)[cropx,cropy]*gain_inv_e)*gain_atm + 
   round(randmodelsky*gain_inv_e)*gain_sys)/gain_eff
-sigma = sqrt(((randmodelc-DataM$skylevel)/throughput_atm_r + DataM$skylevel/throughput_sys_r)/gain_eff)
-DataMC=profitSetupData(image=randmodelc, mask=mask, sigma=sigma, segim = segim, psf = psf, 
+sigma = sqrt(((randmodelc-skylevel)/throughput_atm + skylevel/throughput_sys)/gain_eff)
+DataMC=profitSetupData(image=randmodelc, mask=mask, sigma=sigma, segim = segim, psf = psff,
   model = model, tofit = tofit, tolog=tolog, priors = priors, intervals=intervals, 
   algo.func = "", finesample = finesample, verbose=TRUE)
 DataMC$gain = gain_eff
-DataMC$skylevel = 10^best['sky.bg']
-rv = profitLikeModel(best,DataMC,makeplots=T,cmap = cmap, errcmap=errcmap)
+rv = profitLikeModel(init,DataMC,makeplots=T,cmap = cmap, errcmap=errcmap)
 
 makerandc = FALSE
 if(makerandc)
@@ -526,8 +419,8 @@ if(makerandc)
     (floor(ny/2)-floor(nyc/2)+1):(floor(ny/2)+floor(nyc/2))]
   for(i in 1:nmodels)
   {
-    cropmc[,,i] = (profitBruteConvMC(profitPoissonMC(bmcs,3*i,throughput_atm_r,1),psf,3*i+1,1,gain_inv_e)[cropxc,cropyc]*gain_atm +
-      profitPoissonMC(bsc,3*i+2,throughput_sys_r,gain_inv_e)*gain_sys)/gain_eff
+    cropmc[,,i] = (profitBruteConvMC(profitPoissonMC(bmcs,3*i,throughput_atm,1),psf,3*i+1,1,gain_inv_e)[cropxc,cropyc]*gain_atm +
+      profitPoissonMC(bsc,3*i+2,throughput_sys,gain_inv_e)*gain_sys)/gain_eff
     if(i %% 50) print(i)
   }
   randvars = matrix(0,nxc,nyc)
@@ -553,19 +446,19 @@ if(domultimc)
   tconv = 0
   for(i in 1:nchains)
   {
-    modelcounts = profitPoissonMC(bestmodelcounts,3*i,throughput_atm_r,1)
+    modelcounts = profitPoissonMC(bestmodelcounts,3*i,throughput_atm,1)
     modelcountsc = round(profitBruteConvMC(modelcounts,psf,3*i+1,gain_inv_e))[cropx,cropy]*gain_atm
     modelcounts = round(modelcounts[cropx,cropy]*gain_inv_e)*gain_atm
-    skycounts = profitPoissonMC(bestsky,3*i+2,throughput_sys_r,gain_inv_e)*gain_sys
+    skycounts = profitPoissonMC(bestsky,3*i+2,throughput_sys,gain_inv_e)*gain_sys
     DataM$image = (modelcounts + skycounts)/gain_eff
-    DataM$sigma = sqrt(((modelcounts+skycounts-DataM$skylevel)/throughput_atm_r + DataM$skylevel/throughput_sys_r)/gain_eff^2)
+    DataM$sigma = sqrt(((modelcounts+skycounts-skylevel)/throughput_atm + skylevel/throughput_sys)/gain_eff^2)
     t1mc = proc.time()[['elapsed']]
     LDfitms[[i]]=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataM,Iterations=niter,
       Algorithm='CHARM',Thinning=1,Specs=list(alpha.star=0.44))
     t2mc = proc.time()[['elapsed']]
     tdeconv = tdeconv + t2mc - t1mc
     DataMC$image = (modelcounts + skycounts)/gain_eff
-    DataMC$sigma = sqrt(((modelcountsc++skycounts-DataM$skylevel)/throughput_atm_r + DataM$skylevel/throughput_sys_r)/gain_eff^2)
+    DataMC$sigma = sqrt(((modelcountsc++skycounts-skylevel)/throughput_atm + skylevel/throughput_sys)/gain_eff^2)
     t1mc = proc.time()[['elapsed']]
     LDfitmcs[[i]]=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataMC,Iterations=niter,
       Algorithm='CHARM',Thinning=1,Specs=list(alpha.star=0.44))
@@ -616,7 +509,7 @@ DataMC2$algo.func = "LD"
 
 # Fit the single, 
 #LAfitmc2=LaplaceApproximation(profitLikeModel,parm=init,Data=DataM,Iterations= 1e4,Method='BFGS',CovEst='Identity',sir=FALSE)
-LDfitmc2=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataMC2,Iterations=1e3,Algorithm='CHARM',Thinning=1,Specs=list(alpha.star=0.44))
+LDfitmc2=LaplacesDemon(profitLikeModel,Initial.Values=init,Data=DataMC2,Iterations=2e3,Algorithm='CHARM',Thinning=1,Specs=list(alpha.star=0.44))
 
 # Make a test grid of values to see how well-behaved LP is with fine changes to input params:
 testparams = LAfit_best
